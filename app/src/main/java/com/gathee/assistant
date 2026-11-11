@@ -1,0 +1,124 @@
+package com.gathee.assistant
+
+import android.app.*
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.IBinder
+import android.provider.ContactsContract
+import android.speech.*
+import android.speech.tts.TextToSpeech
+import android.speech.tts.Voice
+import java.util.*
+
+class GatheeService : Service(), TextToSpeech.OnInitListener {
+    private lateinit var tts: TextToSpeech
+    private lateinit var recognizer: SpeechRecognizer
+
+    override fun onCreate() {
+        super.onCreate()
+        tts = TextToSpeech(this, this)
+        setupRecognizer()
+        startForegroundNotification()
+    }
+
+    private fun startForegroundNotification() {
+        val channelId = "gathee_channel"
+        val channel = NotificationChannel(channelId, "Gathee", NotificationManager.IMPORTANCE_LOW)
+        (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).createNotificationChannel(channel)
+        val notif = Notification.Builder(this, channelId)
+            .setContentTitle("Gathee is ON - Male Voice")
+            .setContentText("Say 'Hey Gathee' - I'm listening")
+            .setSmallIcon(android.R.drawable.ic_btn_speak_now).build()
+        startForeground(1, notif)
+    }
+
+    override fun onInit(status: Int) {
+        if(status == TextToSpeech.SUCCESS) {
+            tts.language = Locale.US
+            // MAKE IT MALE - Lower pitch, slower, male voice
+            tts.setPitch(0.85f) // Deep male pitch
+            tts.setSpeechRate(0.95f)
+            // Try to find male voice
+            for(voice in tts.voices) {
+                if(voice.name.contains("male", true) || voice.name.contains("en-us-x-tpc")) {
+                    tts.voice = voice
+                    break
+                }
+            }
+            speak("Hey, it's Gathee. Your guy is online and ready to roll.")
+        }
+    }
+
+    private fun setupRecognizer() {
+        recognizer = SpeechRecognizer.createSpeechRecognizer(this)
+        recognizer.setRecognitionListener(object: RecognitionListener {
+            override fun onResults(results: Bundle?) {
+                val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
+                if(text != null) handleCommand(text)
+                restartListening()
+            }
+            override fun onError(error: Int) { restartListening() }
+            override fun onReadyForSpeech(p: Bundle?) {}
+            override fun onBeginningOfSpeech() {}
+            override fun onRmsChanged(r: Float) {}
+            override fun onBufferReceived(b: ByteArray?) {}
+            override fun onEndOfSpeech() {}
+            override fun onEvent(e: Int, p: Bundle?) {}
+            override fun onPartialResults(pr: Bundle?) {}
+        })
+        restartListening()
+    }
+
+    private fun restartListening() {
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
+        }
+        try { recognizer.startListening(intent) } catch(_: Exception){}
+    }
+
+    private fun handleCommand(text: String) {
+        val lower = text.lowercase()
+        when {
+            "call" in lower -> {
+                val name = lower.replace("hey gathee","").replace("call","").trim()
+                makeCall(name)
+            }
+            "message" in lower || "text" in lower -> speak("Alright, who do you want me to text and what should I say?")
+            "email" in lower -> speak("Got it. Tell me the email and the message, I'll send it.")
+            "joke" in lower -> speak("Why don't phones ever get tired? Because they always stay charged, boss!")
+            "stop" in lower || "sleep" in lower -> { speak("Alright man, Gathee is going to sleep. Tap start when you need me."); stopSelf() }
+            else -> speak(getAIReply(text))
+        }
+    }
+
+    private fun getAIReply(userText: String): String {
+        // REPLACE THIS WITH YOUR AI API KEY FOR REAL SMART REPLIES
+        // For now lively male responses:
+        return if("how are you" in userText.lowercase()) "I'm solid, my guy! Gathee is up and running. What do you need?"
+        else "You said $userText. Say call, message, or email and I got you, or just chat with me, I'm here all day."
+    }
+
+    private fun makeCall(name: String) {
+        if(checkSelfPermission(android.Manifest.permission.CALL_PHONE) != PackageManager.PERMISSION_GRANTED) return
+        val cursor = contentResolver.query(ContactsContract.CommonDataKinds.Phone.CONTENT_URI, null, null, null, null)
+        cursor?.use {
+            while(it.moveToNext()) {
+                val displayName = it.getString(it.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME))
+                val number = it.getString(it.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Phone.NUMBER))
+                if(displayName.lowercase().contains(name)) {
+                    speak("Calling $displayName now, boss")
+                    val intent = Intent(Intent.ACTION_CALL, Uri.parse("tel:$number")).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+                    startActivity(intent)
+                    return
+                }
+            }
+        }
+        speak("I couldn't find $name in contacts, man")
+    }
+
+    private fun speak(text: String) { tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, null) }
+    override fun onBind(i: Intent?): IBinder? = null
+    override fun onDestroy() { tts.shutdown(); recognizer.destroy(); super.onDestroy() }
+}
